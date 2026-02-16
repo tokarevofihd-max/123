@@ -22,9 +22,7 @@ menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔥 Смотреть анкеты")],
         [KeyboardButton(text="👤 Моя анкета")],
-        [KeyboardButton(text="❤️ Кто лайкнул"), KeyboardButton(text="🏆 Топ")],
-        [KeyboardButton(text="⚙️ Фильтр")],
-        [KeyboardButton(text="📝 Создать анкету"), KeyboardButton(text="✏️ Изменить анкету")]
+        [KeyboardButton(text="📝 Создать анкету")]
     ],
     resize_keyboard=True
 )
@@ -44,8 +42,6 @@ class Form(StatesGroup):
     drink = State()
     description = State()
     photo = State()
-    filter_age = State()
-    filter_city = State()
 
 # ---------- БД ----------
 async def init_db():
@@ -68,13 +64,6 @@ async def init_db():
         UNIQUE(user_id, liked_user_id)
         )""")
 
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS filters(
-        user_id INTEGER PRIMARY KEY,
-        age INTEGER,
-        city TEXT
-        )""")
-
         await db.commit()
 
 # ---------- СТАРТ ----------
@@ -86,18 +75,6 @@ async def start(message: Message):
 @dp.message(F.text == "📝 Создать анкету")
 async def create_profile(message: Message, state: FSMContext):
     await message.answer("Имя?")
-    await state.set_state(Form.name)
-
-@dp.message(F.text == "✏️ Изменить анкету")
-async def edit_profile(message: Message, state: FSMContext):
-
-    async with aiosqlite.connect("database.db") as db:
-        cursor = await db.execute("SELECT 1 FROM profiles WHERE user_id=?", (message.from_user.id,))
-        if not await cursor.fetchone():
-            await message.answer("❌ У тебя нет анкеты")
-            return
-
-    await message.answer("Как тебя зовут?")
     await state.set_state(Form.name)
 
 @dp.message(Form.name)
@@ -112,7 +89,7 @@ async def age(message: Message, state: FSMContext):
         await message.answer("Введите число")
         return
     await state.update_data(age=int(message.text))
-    await message.answer("📍Город?")
+    await message.answer("Город?")
     await state.set_state(Form.city)
 
 @dp.message(Form.city)
@@ -130,7 +107,7 @@ async def drink(message: Message, state: FSMContext):
 @dp.message(Form.description)
 async def desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
-    await message.answer("📸 Отправь фото")
+    await message.answer("Отправь фото")
     await state.set_state(Form.photo)
 
 # ---------- ФОТО ----------
@@ -138,7 +115,7 @@ async def desc(message: Message, state: FSMContext):
 async def photo_handler(message: Message, state: FSMContext):
 
     if message.content_type != ContentType.PHOTO:
-        await message.answer("❌ Отправь фото")
+        await message.answer("Отправь фото")
         return
 
     data = await state.get_data()
@@ -170,7 +147,7 @@ async def my_profile(message: Message):
         p = await cursor.fetchone()
 
     if not p:
-        await message.answer("❌ У тебя нет анкеты")
+        await message.answer("❌ Нет анкеты")
         return
 
     text = f"{p[1]}, {p[2]}\n{p[3]}\n🍹 {p[4]}\n{p[5]}"
@@ -201,11 +178,16 @@ async def send_next(user_id):
     text = f"{profile[1]}, {profile[2]}\n{profile[3]}\n🍹 {profile[4]}\n{profile[5]}"
     await bot.send_photo(user_id, profile[6], caption=text, reply_markup=swipe_kb)
 
-# ---------- LIKE (ПРО МЭТЧ) ----------
+# ---------- LIKE + MATCH ----------
 @dp.callback_query(F.data == "like")
 async def like(call: CallbackQuery):
+
     user = call.from_user.id
     liked = current.get(user)
+
+    if not liked:
+        await call.answer("Ошибка")
+        return
 
     async with aiosqlite.connect("database.db") as db:
         await db.execute("INSERT OR IGNORE INTO likes VALUES (?, ?)", (user, liked))
@@ -215,24 +197,17 @@ async def like(call: CallbackQuery):
             (liked, user)
         )
 
-        if await cursor.fetchone():
+        match = await cursor.fetchone()
+
+        if match:
             user_chat = await bot.get_chat(user)
             liked_chat = await bot.get_chat(liked)
 
             user_link = f'<a href="tg://user?id={user}">{user_chat.first_name}</a>'
             liked_link = f'<a href="tg://user?id={liked}">{liked_chat.first_name}</a>'
 
-            await bot.send_message(
-                user,
-                f"💖 У вас МЭТЧ!\n\nНапиши: {liked_link}",
-                parse_mode="HTML"
-            )
-
-            await bot.send_message(
-                liked,
-                f"💖 У вас МЭТЧ!\n\nНапиши: {user_link}",
-                parse_mode="HTML"
-            )
+            await bot.send_message(user, f"💖 МЭТЧ!\nНапиши 👉 {liked_link}", parse_mode="HTML")
+            await bot.send_message(liked, f"💖 МЭТЧ!\nНапиши 👉 {user_link}", parse_mode="HTML")
 
         await db.commit()
 

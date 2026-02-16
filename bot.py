@@ -12,7 +12,6 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 
 TOKEN = "8537270994:AAEq_RGSLwc2lxgALZqPNuAyhoA4Q_jIsnQ"
-ADMIN_ID = 123456789
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -42,6 +41,9 @@ class Form(StatesGroup):
     drink = State()
     description = State()
     photo = State()
+
+class Filter(StatesGroup):
+    city = State()
 
 # ---------- БД ----------
 async def init_db():
@@ -153,16 +155,52 @@ async def my_profile(message: Message):
     text = f"{p[1]}, {p[2]}\n{p[3]}\n🍹 {p[4]}\n{p[5]}"
     await message.answer_photo(p[6], caption=text)
 
-# ---------- ПРОСМОТР ----------
+# ---------- ЗАПРОС ФИЛЬТРА ----------
 queues = {}
 current = {}
 
 @dp.message(F.text == "🔥 Смотреть анкеты")
-async def view(message: Message):
-    async with aiosqlite.connect("database.db") as db:
-        cursor = await db.execute("SELECT * FROM profiles WHERE user_id!=?", (message.from_user.id,))
-        queues[message.from_user.id] = await cursor.fetchall()
+async def ask_city(message: Message, state: FSMContext):
+    await message.answer("Введите город для поиска или напишите 'любой'")
+    await state.set_state(Filter.city)
 
+@dp.message(Filter.city)
+async def view(message: Message, state: FSMContext):
+
+    city_filter = message.text.lower()
+    await state.clear()
+
+    async with aiosqlite.connect("database.db") as db:
+
+        if city_filter == "любой":
+            query = """
+                SELECT * FROM profiles
+                WHERE user_id != ?
+                AND user_id NOT IN (
+                    SELECT liked_user_id FROM likes WHERE user_id = ?
+                )
+            """
+            params = (message.from_user.id, message.from_user.id)
+
+        else:
+            query = """
+                SELECT * FROM profiles
+                WHERE user_id != ?
+                AND LOWER(city) = ?
+                AND user_id NOT IN (
+                    SELECT liked_user_id FROM likes WHERE user_id = ?
+                )
+            """
+            params = (message.from_user.id, city_filter, message.from_user.id)
+
+        cursor = await db.execute(query, params)
+        profiles = await cursor.fetchall()
+
+    if not profiles:
+        await message.answer("😢 Анкеты не найдены")
+        return
+
+    queues[message.from_user.id] = profiles
     await send_next(message.from_user.id)
 
 async def send_next(user_id):
@@ -178,9 +216,11 @@ async def send_next(user_id):
     text = f"{profile[1]}, {profile[2]}\n{profile[3]}\n🍹 {profile[4]}\n{profile[5]}"
     await bot.send_photo(user_id, profile[6], caption=text, reply_markup=swipe_kb)
 
-# ---------- LIKE + MATCH ----------
+# ---------- LIKE ----------
 @dp.callback_query(F.data == "like")
 async def like(call: CallbackQuery):
+
+    await call.message.edit_reply_markup(reply_markup=None)
 
     user = call.from_user.id
     liked = current.get(user)
@@ -214,8 +254,10 @@ async def like(call: CallbackQuery):
     await send_next(user)
     await call.answer()
 
+# ---------- SKIP ----------
 @dp.callback_query(F.data == "skip")
 async def skip(call: CallbackQuery):
+    await call.message.edit_reply_markup(reply_markup=None)
     await send_next(call.from_user.id)
     await call.answer()
 

@@ -12,7 +12,6 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 
 TOKEN = "8537270994:AAEq_RGSLwc2lxgALZqPNuAyhoA4Q_jIsnQ"
-ADMIN_ID = 123456789
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -22,9 +21,7 @@ menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔥 Смотреть анкеты")],
         [KeyboardButton(text="👤 Моя анкета")],
-        [KeyboardButton(text="❤️ Кто лайкнул"), KeyboardButton(text="🏆 Топ")],
-        [KeyboardButton(text="⚙️ Фильтр")],
-        [KeyboardButton(text="📝 Создать анкету"), KeyboardButton(text="✏️ Изменить анкету")]
+        [KeyboardButton(text="📝 Создать анкету")]
     ],
     resize_keyboard=True
 )
@@ -44,8 +41,6 @@ class Form(StatesGroup):
     drink = State()
     description = State()
     photo = State()
-    filter_age = State()
-    filter_city = State()
 
 # ---------- БД ----------
 async def init_db():
@@ -64,14 +59,8 @@ async def init_db():
         await db.execute("""
         CREATE TABLE IF NOT EXISTS likes(
         user_id INTEGER,
-        liked_user_id INTEGER
-        )""")
-
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS filters(
-        user_id INTEGER PRIMARY KEY,
-        age INTEGER,
-        city TEXT
+        liked_user_id INTEGER,
+        UNIQUE(user_id, liked_user_id)
         )""")
 
         await db.commit()
@@ -79,24 +68,12 @@ async def init_db():
 # ---------- СТАРТ ----------
 @dp.message(F.text == "/start")
 async def start(message: Message):
-    await message.answer("🍻 Добро пожаловать!", reply_markup=menu)
+    await message.answer("🍻 Бот для поиска компании выпить", reply_markup=menu)
 
 # ---------- СОЗДАНИЕ ----------
 @dp.message(F.text == "📝 Создать анкету")
 async def create_profile(message: Message, state: FSMContext):
     await message.answer("Имя?")
-    await state.set_state(Form.name)
-
-@dp.message(F.text == "✏️ Изменить анкету")
-async def edit_profile(message: Message, state: FSMContext):
-
-    async with aiosqlite.connect("database.db") as db:
-        cursor = await db.execute("SELECT 1 FROM profiles WHERE user_id=?", (message.from_user.id,))
-        if not await cursor.fetchone():
-            await message.answer("❌ У тебя нет анкеты")
-            return
-
-    await message.answer("Как тебя зовут?")
     await state.set_state(Form.name)
 
 @dp.message(Form.name)
@@ -111,12 +88,12 @@ async def age(message: Message, state: FSMContext):
         await message.answer("Введите число")
         return
     await state.update_data(age=int(message.text))
-    await message.answer("📍Город?")
+    await message.answer("Город?")
     await state.set_state(Form.city)
 
 @dp.message(Form.city)
 async def city(message: Message, state: FSMContext):
-    await state.update_data(city=message.text)
+    await state.update_data(city=message.text.lower())
     await message.answer("Что пьёшь?")
     await state.set_state(Form.drink)
 
@@ -129,15 +106,14 @@ async def drink(message: Message, state: FSMContext):
 @dp.message(Form.description)
 async def desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
-    await message.answer("📸 Отправь фото")
+    await message.answer("Отправь фото")
     await state.set_state(Form.photo)
 
-# ---------- ФОТО ----------
 @dp.message(Form.photo)
 async def photo_handler(message: Message, state: FSMContext):
 
     if message.content_type != ContentType.PHOTO:
-        await message.answer("❌ Отправь фото")
+        await message.answer("Отправь фото")
         return
 
     data = await state.get_data()
@@ -169,35 +145,11 @@ async def my_profile(message: Message):
         p = await cursor.fetchone()
 
     if not p:
-        await message.answer("❌ У тебя нет анкеты")
+        await message.answer("❌ Нет анкеты")
         return
 
-    text = f"{p[1]}, {p[2]}\n{p[3]}\n🍹 {p[4]}\n{p[5]}"
+    text = f"{p[1]}, {p[2]}\n📍 {p[3]}\n🍹 {p[4]}\n{p[5]}"
     await message.answer_photo(p[6], caption=text)
-
-# ---------- ФИЛЬТР ----------
-@dp.message(F.text == "⚙️ Фильтр")
-async def filter_start(message: Message, state: FSMContext):
-    await message.answer("Мин возраст:")
-    await state.set_state(Form.filter_age)
-
-@dp.message(Form.filter_age)
-async def filter_age(message: Message, state: FSMContext):
-    await state.update_data(age=int(message.text))
-    await message.answer("Город:")
-    await state.set_state(Form.filter_city)
-
-@dp.message(Form.filter_city)
-async def filter_city(message: Message, state: FSMContext):
-    data = await state.get_data()
-
-    async with aiosqlite.connect("database.db") as db:
-        await db.execute("INSERT OR REPLACE INTO filters VALUES (?, ?, ?)",
-                         (message.from_user.id, data["age"], message.text))
-        await db.commit()
-
-    await message.answer("✅ Фильтр сохранён", reply_markup=menu)
-    await state.clear()
 
 # ---------- ПРОСМОТР ----------
 queues = {}
@@ -205,18 +157,12 @@ current = {}
 
 @dp.message(F.text == "🔥 Смотреть анкеты")
 async def view(message: Message):
+
     async with aiosqlite.connect("database.db") as db:
-        cursor = await db.execute("SELECT age, city FROM filters WHERE user_id=?", (message.from_user.id,))
-        f = await cursor.fetchone()
-
-        if f:
-            cursor = await db.execute(
-                "SELECT * FROM profiles WHERE age>=? AND city=? AND user_id!=?",
-                (f[0], f[1], message.from_user.id)
-            )
-        else:
-            cursor = await db.execute("SELECT * FROM profiles WHERE user_id!=?", (message.from_user.id,))
-
+        cursor = await db.execute(
+            "SELECT * FROM profiles WHERE user_id!=? AND city=(SELECT city FROM profiles WHERE user_id=?)",
+            (message.from_user.id, message.from_user.id)
+        )
         queues[message.from_user.id] = await cursor.fetchall()
 
     await send_next(message.from_user.id)
@@ -231,83 +177,45 @@ async def send_next(user_id):
     profile = q.pop(0)
     current[user_id] = profile[0]
 
-    text = f"{profile[1]}, {profile[2]}\n{profile[3]}\n🍹 {profile[4]}\n{profile[5]}"
+    text = f"{profile[1]}, {profile[2]}\n📍 {profile[3]}\n🍹 {profile[4]}\n{profile[5]}"
     await bot.send_photo(user_id, profile[6], caption=text, reply_markup=swipe_kb)
 
 # ---------- LIKE ----------
 @dp.callback_query(F.data == "like")
 async def like(call: CallbackQuery):
+
     user = call.from_user.id
     liked = current.get(user)
 
     async with aiosqlite.connect("database.db") as db:
-        await db.execute("INSERT INTO likes VALUES (?, ?)", (user, liked))
-        cursor = await db.execute("SELECT 1 FROM likes WHERE user_id=? AND liked_user_id=?", (liked, user))
-        if await cursor.fetchone():
-            await bot.send_message(user, "❤️ У вас МЭТЧ!")
-            await bot.send_message(liked, "❤️ У вас МЭТЧ!")
+        await db.execute("INSERT OR IGNORE INTO likes VALUES (?, ?)", (user, liked))
+
+        cursor = await db.execute(
+            "SELECT 1 FROM likes WHERE user_id=? AND liked_user_id=?",
+            (liked, user)
+        )
+        match = await cursor.fetchone()
+
+        if match:
+            user_chat = await bot.get_chat(user)
+            liked_chat = await bot.get_chat(liked)
+
+            user_link = f'<a href="tg://user?id={user}">{user_chat.first_name}</a>'
+            liked_link = f'<a href="tg://user?id={liked}">{liked_chat.first_name}</a>'
+
+            await bot.send_message(user, f"💖 МЭТЧ!\nНапиши 👉 {liked_link}", parse_mode="HTML")
+            await bot.send_message(liked, f"💖 МЭТЧ!\nНапиши 👉 {user_link}", parse_mode="HTML")
+
         await db.commit()
 
     await send_next(user)
     await call.answer()
 
+# ---------- SKIP ----------
 @dp.callback_query(F.data == "skip")
 async def skip(call: CallbackQuery):
     await send_next(call.from_user.id)
     await call.answer()
-
-# ---------- КТО ЛАЙКНУЛ ----------
-@dp.message(F.text == "❤️ Кто лайкнул")
-async def who_liked(message: Message):
-    async with aiosqlite.connect("database.db") as db:
-        cursor = await db.execute("""
-        SELECT profiles.name FROM likes
-        JOIN profiles ON profiles.user_id=likes.user_id
-        WHERE likes.liked_user_id=?
-        """, (message.from_user.id,))
-        rows = await cursor.fetchall()
-
-    if not rows:
-        await message.answer("😢 Пока никто")
-        return
-
-    await message.answer("\n".join([r[0] for r in rows]))
-
-# ---------- ТОП ----------
-@dp.message(F.text == "🏆 Топ")
-async def top(message: Message):
-    async with aiosqlite.connect("database.db") as db:
-        cursor = await db.execute("""
-        SELECT profiles.name, COUNT(*) FROM likes
-        JOIN profiles ON profiles.user_id=likes.liked_user_id
-        GROUP BY liked_user_id ORDER BY COUNT(*) DESC LIMIT 10
-        """)
-        rows = await cursor.fetchall()
-
-    if not rows:
-        await message.answer("Нет данных")
-        return
-
-    text = "\n".join([f"{r[0]} — {r[1]} ❤️" for r in rows])
-    await message.answer(text)
-
-# ---------- АДМИН ----------
-@dp.message(F.text == "/admin")
-async def admin(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("👑 Админ панель\n/users")
-
-@dp.message(F.text == "/users")
-async def users(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    async with aiosqlite.connect("database.db") as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM profiles")
-        count = await cursor.fetchone()
-
-    await message.answer(f"👥 Пользователей: {count[0]}")
 
 # ---------- ЗАПУСК ----------
 async def main():

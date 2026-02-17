@@ -1,4 +1,1 @@
-aiogram
-aiosqlite
-python-dotenv
-asyncpg
+python-telegram-bot==20.7

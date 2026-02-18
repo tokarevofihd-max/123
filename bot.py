@@ -113,6 +113,18 @@ async def profile(message: types.Message):
     text = f"💘 <b>{user['name']}, {user['age']}</b>\n📍 {user['city']}\n\n✨ {user['about']}"
     await message.answer_photo(user["photo"], caption=text, parse_mode="HTML")
 
+# ---------- ФУНКЦИЯ ФИЛЬТРА ПО ГОРОДУ ----------
+def get_profiles_same_city(uid):
+    if uid not in users:
+        return []
+
+    my_city = users[uid]["city"].strip().lower()
+
+    return [
+        u for u, data in users.items()
+        if u != uid and data["city"].strip().lower() == my_city
+    ]
+
 # ---------- СМОТРЕТЬ ----------
 @dp.message(F.text == "🔥 Найти людей рядом")
 async def view(message: types.Message):
@@ -126,10 +138,10 @@ async def view(message: types.Message):
     await send_next(uid, message)
 
 async def send_next(uid, message):
-    profiles = [u for u in users if u != uid]
+    profiles = get_profiles_same_city(uid)
 
     if not profiles:
-        await message.answer("Нет анкет")
+        await message.answer("В твоём городе пока нет анкет 😔")
         return
 
     i = view_index.get(uid, 0)
@@ -150,7 +162,7 @@ async def send_next(uid, message):
 async def like(callback: types.CallbackQuery):
 
     uid = callback.from_user.id
-    profiles = [u for u in users if u != uid]
+    profiles = get_profiles_same_city(uid)
 
     if uid not in view_index or view_index[uid] >= len(profiles):
         await callback.answer()
@@ -164,7 +176,6 @@ async def like(callback: types.CallbackQuery):
     liker = users[uid]
     await bot.send_message(target, f"❤️ Тебя лайкнул(а) {liker['name']}")
 
-    # MATCH
     if uid in likes_sent.get(target, set()):
 
         link1 = f"https://t.me/{users[uid]['username']}"
@@ -178,7 +189,7 @@ async def like(callback: types.CallbackQuery):
     await send_next(uid, callback.message)
     await callback.answer()
 
-# ---------- ЛАЙКИ КАК В ДАЙВИНЧИКЕ ----------
+# ---------- ЛАЙКИ ----------
 @dp.message(F.text == "💌 Лайки")
 async def view_likes(message: types.Message):
 
@@ -263,4 +274,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

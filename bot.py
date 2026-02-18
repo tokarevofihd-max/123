@@ -13,10 +13,10 @@ dp = Dispatcher(storage=MemoryStorage())
 
 users = {}
 view_index = {}
+viewed_profiles = {}
 
 likes_sent = {}
 likes_received = {}
-
 likes_view_index = {}
 
 # ---------- МЕНЮ ----------
@@ -24,9 +24,27 @@ menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔥 Найти людей рядом")],
         [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💌 Лайки")],
+        [KeyboardButton(text="⚙️ Кого искать")],
         [KeyboardButton(text="✏️ создать / Изменить анкету")]
     ],
     resize_keyboard=True
+)
+
+gender_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👨 Мужской"), KeyboardButton(text="👩 Женский")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+search_gender_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👨 Искать парней"), KeyboardButton(text="👩 Искать девушек")],
+        [KeyboardButton(text="🌍 Искать всех")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
 )
 
 swipe_kb = InlineKeyboardMarkup(
@@ -36,25 +54,22 @@ swipe_kb = InlineKeyboardMarkup(
     ]
 )
 
-likes_swipe_kb = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="❤️ Лайк в ответ", callback_data="like_back")],
-        [InlineKeyboardButton(text="👎 Пропустить", callback_data="skip_like")]
-    ]
-)
-
 # ---------- СОСТОЯНИЯ ----------
 class CreateProfile(StatesGroup):
     name = State()
     age = State()
+    gender = State()
     city = State()
     about = State()
     photo = State()
 
+class SearchSettings(StatesGroup):
+    gender = State()
+
 # ---------- START ----------
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    await message.answer("💜 Добро пожаловать в POBOKALY Bot. пиши /start чтобы начать", reply_markup=menu)
+    await message.answer("💜 Добро пожаловать", reply_markup=menu)
 
 # ---------- СОЗДАНИЕ ----------
 @dp.message(F.text == "✏️ создать / Изменить анкету")
@@ -71,13 +86,20 @@ async def set_name(message: types.Message, state: FSMContext):
 @dp.message(CreateProfile.age)
 async def set_age(message: types.Message, state: FSMContext):
     await state.update_data(age=message.text)
-    await message.answer("Город:")
+    await message.answer("Выбери пол:", reply_markup=gender_kb)
+    await state.set_state(CreateProfile.gender)
+
+@dp.message(CreateProfile.gender)
+async def set_gender(message: types.Message, state: FSMContext):
+    gender = "male" if "Муж" in message.text else "female"
+    await state.update_data(gender=gender)
+    await message.answer("Город:", reply_markup=menu)
     await state.set_state(CreateProfile.city)
 
 @dp.message(CreateProfile.city)
 async def set_city(message: types.Message, state: FSMContext):
     await state.update_data(city=message.text)
-    await message.answer("что любишь выпить? Расскижи больше о себе):")
+    await message.answer("О себе:")
     await state.set_state(CreateProfile.about)
 
 @dp.message(CreateProfile.about)
@@ -93,25 +115,59 @@ async def set_photo(message: types.Message, state: FSMContext):
     users[message.from_user.id] = {
         "name": data["name"],
         "age": data["age"],
+        "gender": data["gender"],
+        "search_gender": "any",
         "city": data["city"],
         "about": data["about"],
         "photo": message.photo[-1].file_id,
         "username": message.from_user.username
     }
 
+    viewed_profiles[message.from_user.id] = set()
+
     await state.clear()
     await message.answer("✅ Анкета сохранена", reply_markup=menu)
 
-# ---------- ПРОФИЛЬ ----------
-@dp.message(F.text == "👤 Профиль")
-async def profile(message: types.Message):
-    user = users.get(message.from_user.id)
-    if not user:
-        await message.answer("❌ Нет анкеты")
+# ---------- НАСТРОЙКА ПОИСКА ----------
+@dp.message(F.text == "⚙️ Кого искать")
+async def search_settings(message: types.Message, state: FSMContext):
+    await message.answer("Выбери кого искать:", reply_markup=search_gender_kb)
+    await state.set_state(SearchSettings.gender)
+
+@dp.message(SearchSettings.gender)
+async def set_search_gender(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+
+    if uid not in users:
+        await message.answer("Создай анкету сначала")
         return
 
-    text = f"💘 <b>{user['name']}, {user['age']}</b>\n📍 {user['city']}\n\n✨ {user['about']}"
-    await message.answer_photo(user["photo"], caption=text, parse_mode="HTML")
+    if "парней" in message.text:
+        users[uid]["search_gender"] = "male"
+    elif "девушек" in message.text:
+        users[uid]["search_gender"] = "female"
+    else:
+        users[uid]["search_gender"] = "any"
+
+    await state.clear()
+    await message.answer("✅ Настройки сохранены", reply_markup=menu)
+
+# ---------- ФУНКЦИЯ ПОИСКА ----------
+def get_profiles_same_city(uid):
+    if uid not in users:
+        return []
+
+    my_city = users[uid]["city"].strip().lower()
+    search_gender = users[uid]["search_gender"]
+    viewed = viewed_profiles.get(uid, set())
+
+    return [
+        u for u, data in users.items()
+        if u != uid
+        and data["city"].strip().lower() == my_city
+        and (search_gender == "any" or data["gender"] == search_gender)
+        and u not in viewed
+    ]
 
 # ---------- СМОТРЕТЬ ----------
 @dp.message(F.text == "🔥 Найти людей рядом")
@@ -126,10 +182,10 @@ async def view(message: types.Message):
     await send_next(uid, message)
 
 async def send_next(uid, message):
-    profiles = [u for u in users if u != uid]
+    profiles = get_profiles_same_city(uid)
 
     if not profiles:
-        await message.answer("Нет анкет")
+        await message.answer("Нет подходящих анкет 😔")
         return
 
     i = view_index.get(uid, 0)
@@ -139,6 +195,8 @@ async def send_next(uid, message):
         return
 
     target = profiles[i]
+    viewed_profiles.setdefault(uid, set()).add(target)
+
     user = users[target]
 
     text = f"💘 <b>{user['name']}, {user['age']}</b>\n📍 {user['city']}\n\n✨ {user['about']}"
@@ -150,7 +208,7 @@ async def send_next(uid, message):
 async def like(callback: types.CallbackQuery):
 
     uid = callback.from_user.id
-    profiles = [u for u in users if u != uid]
+    profiles = get_profiles_same_city(uid)
 
     if uid not in view_index or view_index[uid] >= len(profiles):
         await callback.answer()
@@ -164,9 +222,7 @@ async def like(callback: types.CallbackQuery):
     liker = users[uid]
     await bot.send_message(target, f"❤️ Тебя лайкнул(а) {liker['name']}")
 
-    # MATCH
     if uid in likes_sent.get(target, set()):
-
         link1 = f"https://t.me/{users[uid]['username']}"
         link2 = f"https://t.me/{users[target]['username']}"
 
@@ -176,72 +232,6 @@ async def like(callback: types.CallbackQuery):
     view_index[uid] += 1
     await callback.message.delete()
     await send_next(uid, callback.message)
-    await callback.answer()
-
-# ---------- ЛАЙКИ КАК В ДАЙВИНЧИКЕ ----------
-@dp.message(F.text == "💌 Лайки")
-async def view_likes(message: types.Message):
-
-    uid = message.from_user.id
-    liked = list(likes_received.get(uid, set()))
-
-    if not liked:
-        await message.answer("😔 Пока лайков нет")
-        return
-
-    likes_view_index[uid] = 0
-    await send_like_profile(uid, message)
-
-async def send_like_profile(uid, message):
-
-    liked = list(likes_received.get(uid, set()))
-    i = likes_view_index.get(uid, 0)
-
-    if i >= len(liked):
-        await message.answer("👍 Ты посмотрел всех")
-        return
-
-    target = liked[i]
-    user = users[target]
-
-    text = f"❤️ Тебя лайкнул(а)\n\n💘 <b>{user['name']}, {user['age']}</b>\n📍 {user['city']}\n\n✨ {user['about']}"
-
-    await message.answer_photo(user["photo"], caption=text, reply_markup=likes_swipe_kb, parse_mode="HTML")
-
-# ---------- ЛАЙК В ОТВЕТ ----------
-@dp.callback_query(F.data == "like_back")
-async def like_back(callback: types.CallbackQuery):
-
-    uid = callback.from_user.id
-    liked = list(likes_received.get(uid, set()))
-
-    if uid not in likes_view_index:
-        return
-
-    target = liked[likes_view_index[uid]]
-
-    likes_sent.setdefault(uid, set()).add(target)
-
-    link1 = f"https://t.me/{users[uid]['username']}"
-    link2 = f"https://t.me/{users[target]['username']}"
-
-    await callback.message.answer(f"💘 MATCH!\n👉 {link2}")
-    await bot.send_message(target, f"💘 MATCH!\n👉 {link1}")
-
-    likes_view_index[uid] += 1
-    await callback.message.delete()
-    await send_like_profile(uid, callback.message)
-    await callback.answer()
-
-# ---------- ПРОПУСТИТЬ ----------
-@dp.callback_query(F.data == "skip_like")
-async def skip_like(callback: types.CallbackQuery):
-
-    uid = callback.from_user.id
-    likes_view_index[uid] += 1
-
-    await callback.message.delete()
-    await send_like_profile(uid, callback.message)
     await callback.answer()
 
 # ---------- SKIP ----------
@@ -256,7 +246,10 @@ async def skip(callback: types.CallbackQuery):
 # ---------- ЗАПУСК ----------
 async def main():
     print("BOT STARTED")
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
